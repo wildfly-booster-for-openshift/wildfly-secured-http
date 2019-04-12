@@ -1,0 +1,22 @@
+= JavaEE Secured HTTP API Booster
+
+This booster can't be launched directly from the launcher.
+
+These are the required steps to deploy it:
+* Install the SSO service
+[source,]
+----
+oc apply -f .openshiftio/service.sso.yaml
+----
+* Install the application template
+[source,]
+----
+oc apply -f .openshiftio/application.yml
+----
+* Create the application
+[source,]
+----
+oc new-app --template=wildfly-secured-http-booster -p SOURCE_REPOSITORY_URL=https://github.com/ehsavoie/wildfly-secured-http \
+  -p SOURCE_REPOSITORY_REF=master -p SOURCE_REPOSITORY_DIR=. \
+  -p SSO_AUTH_SERVER_URL=$(oc get route secure-sso -o jsonpath='{"https://"}{.spec.host}{"/auth\n"}')
+----

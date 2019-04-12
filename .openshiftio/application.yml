@@ -1,0 +1,194 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: wildfly-secured-http-booster
+  annotations:
+    description: This templates creates a Wildlfy application using Red Hat SSO to handle the authentication.
+    tags: instant-app
+parameters:
+- name: SOURCE_REPOSITORY_URL
+  description: The source URL for the application
+  displayName: Source URL
+  required: true
+- name: SOURCE_REPOSITORY_REF
+  description: The branch name for the application
+  displayName: Source Branch
+  value: master
+  required: true
+- name: SOURCE_REPOSITORY_DIR
+  description: The location within the source repo of the application
+  displayName: Source Directory
+  value: .
+  required: true
+- name: GITHUB_WEBHOOK_SECRET
+  description: A secret string used to configure the GitHub webhook.
+  displayName: GitHub Webhook Secret
+  required: true
+  from: '[a-zA-Z0-9]{40}'
+  generate: expression
+- name: ARTIFACT_DIR
+  description: "Directory from which archives will be copied into the deployment folder. If unspecified, all archives in /target will be copied."
+  displayName: Artifacts Directory
+  value: target
+  required: false
+- name: SSO_AUTH_SERVER_URL
+  description: "The URL for the SSO server. oc get route secure-sso -o jsonpath='{\"https://\"}{.spec.host}{\"/auth\n\"}'.  This is the URL through which the user will be redirected when a login or token is required by the application."
+  displayName: SSO Server URL
+  required: true
+objects:
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    name: secured-wildfly-http
+    labels:
+      booster: secured-wildfly-http
+  spec: {}
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    name: runtime-secured-wildfly-http
+    labels:
+      booster: secured-wildfly-http
+  spec:
+    tags:
+    - name: latest
+      from:
+        kind: DockerImage
+        name: openshift/wildfly-160-centos7:latest
+
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    name: secured-wildfly-http
+    labels:
+      booster: secured-wildfly-http
+  spec:
+    output:
+      to:
+        kind: ImageStreamTag
+        name: secured-wildfly-http:latest
+    postCommit: {}
+    resources: {}
+    source:
+      git:
+        uri: ${SOURCE_REPOSITORY_URL}
+        ref: ${SOURCE_REPOSITORY_REF}
+      type: Git
+    strategy:
+      sourceStrategy:
+        from:
+          kind: ImageStreamTag
+          name: runtime-secured-wildfly-http:latest
+        incremental: true
+        env:
+        - name: MAVEN_ARGS_APPEND
+          value: "-pl ${SOURCE_REPOSITORY_DIR}"
+        - name: ARTIFACT_DIR
+          value: "${ARTIFACT_DIR}"
+        - name: SSO_AUTH_SERVER_URL
+          value: ${SSO_AUTH_SERVER_URL}
+      type: Source
+    triggers:
+    - github:
+        secret: ${GITHUB_WEBHOOK_SECRET}
+      type: GitHub
+    - type: ConfigChange
+    - imageChange: {}
+      type: ImageChange
+
+- apiVersion: v1
+  kind: Service
+  metadata:
+    labels:
+      app: secured-wildfly-http
+      group: io.openshift
+    name: secured-wildfly-http
+  spec:
+    ports:
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+    selector:
+      app: secured-wildfly-http
+      group: io.openshift
+
+- apiVersion: apps.openshift.io/v1
+  kind: DeploymentConfig
+  metadata:
+    labels:
+      app: secured-wildfly-http
+      group: io.openshift
+    name: secured-wildfly-http
+  spec:
+    replicas: 1
+    selector:
+      app: secured-wildfly-http
+      group: io.openshift
+    template:
+      metadata:
+        labels:
+          app: secured-wildfly-http
+          group: io.openshift
+      spec:
+        containers:
+        - env:
+          - name: SSO_AUTH_SERVER_URL
+            value: ${SSO_AUTH_SERVER_URL}
+          - name: REALM
+            value: master
+          - name: REALM_PUBLIC_KEY
+            value: MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoETnPmN55xBJjRzN/cs30OzJ9olkteLVNRjzdTxFOyRtS2ovDfzdhhO9XzUcTMbIsCOAZtSt8K+6yvBXypOSYvI75EUdypmkcK1KoptqY5KEBQ1KwhWuP7IWQ0fshUwD6jI1QWDfGxfM/h34FvEn/0tJ71xN2P8TI2YanwuDZgosdobx/PAvlGREBGuk4BgmexTOkAdnFxIUQcCkiEZ2C41uCrxiS4CEe5OX91aK9HKZV4ZJX6vnqMHmdDnsMdO+UFtxOBYZio+a1jP4W3d7J5fGeiOaXjQCOpivKnP2yU2DPdWmDMyVb67l8DRA+jh0OJFKZ5H2fNgE3II59vdsRwIDAQAB
+          - name: CLIENT_ID
+            value: demoapp
+          - name: SECRET
+            value: 1daa57a2-b60e-468b-a3ac-25bd2dc2eadc
+          - name: KUBERNETES_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          image: secured-wildfly-http:latest
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9990
+              scheme: HTTP
+            initialDelaySeconds: 180
+          name: wildfly
+          ports:
+          - containerPort: 8080
+            name: http
+            protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9990
+              scheme: HTTP
+            initialDelaySeconds: 10
+          securityContext:
+            privileged: false
+    triggers:
+    - type: ConfigChange
+    - type: ImageChange
+      imageChangeParams:
+        automatic: true
+        containerNames:
+          - wildfly
+        from:
+          kind: ImageStreamTag
+          name: secured-wildfly-http:latest
+
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    labels:
+      app: secured-wildfly-http
+      group: io.openshift
+    name: secured-wildfly-http
+  spec:
+    port:
+      targetPort: 8080
+    to:
+      kind: Service
+      name: secured-wildfly-http
